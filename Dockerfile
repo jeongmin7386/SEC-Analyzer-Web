@@ -1,23 +1,17 @@
-FROM node:20-alpine AS frontend-builder
-
-ENV CI=true
+# 1. Frontend build
+FROM node:20-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
-COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-RUN npm install -g pnpm@9.15.9 && pnpm install --no-frozen-lockfile
+COPY frontend/package*.json ./
+RUN npm install --legacy-peer-deps
 
 COPY frontend/ ./
-ARG VITE_API_BASE_URL=
-ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
-RUN pnpm build
+RUN npm run build
 
 
-FROM python:3.12-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
+# 2. Backend
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -28,6 +22,8 @@ COPY backend ./backend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 WORKDIR /app/backend
+
+ENV PYTHONPATH=/app/backend
 
 EXPOSE 8000
 
