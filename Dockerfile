@@ -5,7 +5,7 @@ ENV CI=true
 WORKDIR /app/frontend
 
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-RUN npm install -g pnpm@9.15.9 && pnpm install --frozen-lockfile
+RUN npm install -g pnpm@9.15.9 && pnpm install --no-frozen-lockfile
 
 COPY frontend/ ./
 ARG VITE_API_BASE_URL=
