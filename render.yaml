@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: sec-stock-analyzer
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: SEC_USER_AGENT
+        value: "JeongMin Oh o5o7386@naver.com"
