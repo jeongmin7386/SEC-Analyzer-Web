@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+backend/.venv
+backend/__pycache__
+backend/app/__pycache__
+frontend/node_modules
+frontend/dist
+work
+outputs
+*.pyc
+.env
+backend/.env
+frontend/.env
