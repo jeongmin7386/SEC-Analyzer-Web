@@ -6,4 +6,5 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: SEC_USER_AGENT
-        sync: false
+        sync: JeongMin Oh o5o7386@naver.com
+

@@ -7,6 +7,7 @@ from datetime import date
 import gzip
 import json
 import os
+from pathlib import Path
 import time
 from typing import Any, Iterable
 import urllib.error
@@ -29,6 +30,7 @@ SEC_DATA_BASE_URL = "https://data.sec.gov"
 DEFAULT_USER_AGENT = "Personal project stock analyzer contact@example.com"
 SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 SEC_USER_AGENT_REQUIRED_MESSAGE = "SEC_USER_AGENT 환경변수가 설정되지 않았습니다"
+TICKER_MAP_FALLBACK_PATH = Path(__file__).resolve().parent / "data" / "company_tickers.json"
 
 ANNUAL_FORMS = {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}
 
@@ -137,7 +139,13 @@ class SECClient:
         if self._ticker_map is not None:
             return self._ticker_map
 
-        payload = self._get_json(f"{SEC_WWW_BASE_URL}/files/company_tickers.json")
+        try:
+            payload = self._get_json(f"{SEC_WWW_BASE_URL}/files/company_tickers.json")
+        except SECConfigurationError:
+            raise
+        except SECClientError:
+            payload = self._get_local_ticker_map_payload()
+
         if not isinstance(payload, dict):
             raise SECClientError("SEC company_tickers.json 응답 형식이 예상과 다릅니다.")
 
@@ -162,6 +170,19 @@ class SECClient:
 
         self._ticker_map = ticker_map
         return ticker_map
+
+    def _get_local_ticker_map_payload(self) -> dict[str, Any]:
+        if not TICKER_MAP_FALLBACK_PATH.exists():
+            raise SECClientError("SEC company_tickers.json을 가져오지 못했고 로컬 fallback 파일도 없습니다.")
+
+        try:
+            payload = json.loads(TICKER_MAP_FALLBACK_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SECClientError("로컬 SEC ticker map fallback 파일을 읽을 수 없습니다.") from exc
+
+        if not isinstance(payload, dict):
+            raise SECClientError("로컬 SEC ticker map fallback 형식이 예상과 다릅니다.")
+        return payload
 
     def get_companyfacts(self, cik: str) -> dict[str, Any]:
         cik = str(cik).zfill(10)
