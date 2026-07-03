@@ -2,7 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../api.js";
 import { formatNumber } from "../formatters.js";
-import { ChangeText, ErrorBlock, LoadingBlock, PeriodSelector } from "./common.jsx";
+import { ChangeText, ErrorBlock, LoadingBlock, PeriodSelector, marketMovementColor } from "./common.jsx";
 import MarketChart from "./MarketChart.jsx";
 
 export default function IndexPage() {
@@ -98,11 +98,10 @@ export default function IndexPage() {
               </div>
               {selected && <ChangeText change={selected.change} changePercent={selected.changePercent} />}
             </div>
-            <MarketChart color="#2563eb" data={selected?.history || []} />
+            <MarketChart color={marketMovementColor(selected?.change)} data={selected?.history || []} />
           </div>
         </>
       )}
     </section>
   );
 }
-

@@ -69,11 +69,18 @@ export function EmptyBlock({ label = "표시할 데이터가 없습니다." }) {
 export function ChangeText({ change, changePercent }) {
   const isUp = Number(change) > 0;
   const isDown = Number(change) < 0;
-  const color = isUp ? "text-emerald-600" : isDown ? "text-rose-600" : "text-slate-500";
+  const color = isUp ? "text-red-600" : isDown ? "text-blue-600" : "text-slate-500";
 
   return (
     <span className={`text-sm font-semibold ${color}`}>
       {formatSigned(change)} · {formatPercent(changePercent)}
     </span>
   );
+}
+
+export function marketMovementColor(change) {
+  const numericChange = Number(change);
+  if (numericChange > 0) return "#dc2626";
+  if (numericChange < 0) return "#2563eb";
+  return "#64748b";
 }
