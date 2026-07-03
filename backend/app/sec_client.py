@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date
 import gzip
@@ -13,6 +14,7 @@ from typing import Any, Iterable
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 import zlib
 
 try:
@@ -27,6 +29,7 @@ except (ImportError, AttributeError):
 
 SEC_WWW_BASE_URL = "https://www.sec.gov"
 SEC_DATA_BASE_URL = "https://data.sec.gov"
+SEC_COMPANYFACTS_BULK_URL = f"{SEC_WWW_BASE_URL}/Archives/edgar/daily-index/xbrl/companyfacts.zip"
 DEFAULT_USER_AGENT = "Personal project stock analyzer contact@example.com"
 SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 SEC_USER_AGENT_REQUIRED_MESSAGE = "SEC_USER_AGENT 환경변수가 설정되지 않았습니다"
@@ -114,6 +117,78 @@ class _UrllibSession:
             return _UrllibResponse(exc.code, exc.read(), exc.headers)
 
 
+class _RemoteRangeFile:
+    def __init__(self, url: str, headers: dict[str, str], timeout: int) -> None:
+        if requests is None:
+            raise SECClientError("requests 패키지가 없어 SEC bulk companyfacts fallback을 사용할 수 없습니다.")
+
+        self.url = url
+        self.headers = headers
+        self.timeout = timeout
+        self.position = 0
+        self._cache: OrderedDict[tuple[int, int], bytes] = OrderedDict()
+
+        response = requests.head(url, headers=headers, timeout=timeout)
+        if response.status_code >= 400:
+            raise SECClientError(f"SEC bulk companyfacts HTTP 오류 {response.status_code}: {url}")
+
+        content_length = response.headers.get("Content-Length")
+        if not content_length:
+            raise SECClientError("SEC bulk companyfacts 파일 크기를 확인할 수 없습니다.")
+
+        self.length = int(content_length)
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self.position = offset
+        elif whence == 1:
+            self.position += offset
+        elif whence == 2:
+            self.position = self.length + offset
+        else:
+            raise ValueError(f"Unsupported seek mode: {whence}")
+
+        if self.position < 0:
+            raise ValueError("Negative seek position")
+        return self.position
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = self.length - self.position
+        if size == 0 or self.position >= self.length:
+            return b""
+
+        start = self.position
+        end = min(self.length - 1, start + size - 1)
+        cache_key = (start, end)
+
+        if cache_key not in self._cache:
+            response = requests.get(
+                self.url,
+                headers={**self.headers, "Range": f"bytes={start}-{end}"},
+                timeout=self.timeout,
+            )
+            if response.status_code != 206:
+                raise SECClientError(f"SEC bulk companyfacts Range HTTP 오류 {response.status_code}: {self.url}")
+
+            self._cache[cache_key] = response.content
+            if len(self._cache) > 24:
+                self._cache.popitem(last=False)
+
+        data = self._cache[cache_key]
+        self.position += len(data)
+        return data
+
+
 @dataclass
 class SECClient:
     user_agent: str = DEFAULT_USER_AGENT
@@ -186,9 +261,34 @@ class SECClient:
 
     def get_companyfacts(self, cik: str) -> dict[str, Any]:
         cik = str(cik).zfill(10)
-        payload = self._get_json(f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json")
+        try:
+            payload = self._get_json(f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json")
+        except SECConfigurationError:
+            raise
+        except SECClientError:
+            payload = self._get_companyfacts_from_bulk_zip(cik)
+
         if not isinstance(payload, dict):
             raise SECClientError("SEC companyfacts 응답 형식이 예상과 다릅니다.")
+        return payload
+
+    def _get_companyfacts_from_bulk_zip(self, cik: str) -> dict[str, Any]:
+        filename = f"CIK{str(cik).zfill(10)}.json"
+        headers = self._sec_headers(SEC_COMPANYFACTS_BULK_URL)
+        headers["Accept-Encoding"] = "identity"
+
+        try:
+            remote_file = _RemoteRangeFile(SEC_COMPANYFACTS_BULK_URL, headers=headers, timeout=self.timeout)
+            with zipfile.ZipFile(remote_file) as archive:
+                with archive.open(filename) as companyfacts_file:
+                    payload = json.loads(companyfacts_file.read().decode("utf-8"))
+        except KeyError as exc:
+            raise SECClientError(f"SEC bulk companyfacts에서 {filename} 파일을 찾을 수 없습니다.") from exc
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            raise SECClientError(f"SEC bulk companyfacts fallback에 실패했습니다: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            raise SECClientError("SEC bulk companyfacts 응답 형식이 예상과 다릅니다.")
         return payload
 
     def get_submissions(self, cik: str) -> dict[str, Any]:
