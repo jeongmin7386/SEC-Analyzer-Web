@@ -34,6 +34,7 @@ DEFAULT_USER_AGENT = "Personal project stock analyzer contact@example.com"
 SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 SEC_USER_AGENT_REQUIRED_MESSAGE = "SEC_USER_AGENT 환경변수가 설정되지 않았습니다"
 TICKER_MAP_FALLBACK_PATH = Path(__file__).resolve().parent / "data" / "company_tickers.json"
+COMPANYFACTS_CACHE_DIR = Path(__file__).resolve().parent / "data" / "companyfacts"
 
 ANNUAL_FORMS = {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}
 
@@ -265,11 +266,48 @@ class SECClient:
             payload = self._get_json(f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json")
         except SECConfigurationError:
             raise
-        except SECClientError:
-            payload = self._get_companyfacts_from_bulk_zip(cik)
+        except SECClientError as direct_error:
+            try:
+                payload = self._get_companyfacts_from_bulk_zip(cik)
+            except SECClientError as bulk_error:
+                payload = self._get_local_companyfacts_payload(cik, direct_error, bulk_error)
 
         if not isinstance(payload, dict):
             raise SECClientError("SEC companyfacts 응답 형식이 예상과 다릅니다.")
+        return payload
+
+    def _get_local_companyfacts_payload(
+        self,
+        cik: str,
+        direct_error: SECClientError | None = None,
+        bulk_error: SECClientError | None = None,
+    ) -> dict[str, Any]:
+        filename = f"CIK{str(cik).zfill(10)}.json"
+        json_path = COMPANYFACTS_CACHE_DIR / filename
+        gzip_path = COMPANYFACTS_CACHE_DIR / f"{filename}.gz"
+
+        try:
+            if json_path.exists():
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            elif gzip_path.exists():
+                with gzip.open(gzip_path, "rt", encoding="utf-8") as companyfacts_file:
+                    payload = json.load(companyfacts_file)
+            else:
+                details = []
+                if direct_error is not None:
+                    details.append(str(direct_error))
+                if bulk_error is not None:
+                    details.append(str(bulk_error))
+                detail_text = " / ".join(details)
+                suffix = f" ({detail_text})" if detail_text else ""
+                raise SECClientError(f"SEC companyfacts 원격 요청이 차단되었고 로컬 캐시 파일이 없습니다: {filename}{suffix}")
+        except SECClientError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise SECClientError(f"로컬 SEC companyfacts 캐시 파일을 읽을 수 없습니다: {filename}") from exc
+
+        if not isinstance(payload, dict):
+            raise SECClientError("로컬 SEC companyfacts 캐시 형식이 예상과 다릅니다.")
         return payload
 
     def _get_companyfacts_from_bulk_zip(self, cik: str) -> dict[str, Any]:
