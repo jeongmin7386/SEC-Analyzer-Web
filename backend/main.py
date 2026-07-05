@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.analyzer import AnalysisError, analyze_financials
+from app.etf_analyzer import analyze_etf
+from app.etf_holdings import ETFHoldingsError, get_etf_holdings, parse_manual_holdings
 from app.market_data import (
     MarketDataError,
     get_exchange_rates,
@@ -20,6 +22,7 @@ from app.market_data import (
     get_stock_price_history,
     get_stock_splits,
 )
+from app.schemas import ETFAnalysisRequest, StockAnalysisRequest
 from app.sec_client import DEFAULT_USER_AGENT, SECClient, SECClientError, SECConfigurationError
 from app.split_adjustment import apply_split_adjustments
 
@@ -28,6 +31,7 @@ load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+SUPPORTED_PRICE_PERIODS = {"1d", "1w", "1m", "1y", "5y", "all"}
 
 
 def cors_origins() -> list[str]:
@@ -37,8 +41,8 @@ def cors_origins() -> list[str]:
 
 app = FastAPI(
     title="SEC Stock Analyzer API",
-    description="SEC EDGAR companyfacts 기반 미국 주식 재무 분석 API",
-    version="1.0.0",
+    description="SEC EDGAR companyfacts based stock and ETF holdings analysis API",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -70,8 +74,24 @@ TICKER_ALIASES = {
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "secUserAgentConfigured": bool(os.getenv("SEC_USER_AGENT", "").strip()),
+        "secUserAgentConfigured": bool(sec_client.user_agent.strip()),
+        "companyfactsCacheDir": str(sec_client.companyfacts_cache.directory),
+        "companyfactsCacheTtlSeconds": sec_client.companyfacts_cache.ttl_seconds,
     }
+
+
+@app.post("/api/analyze/stock")
+def analyze_stock(payload: StockAnalysisRequest) -> dict[str, Any]:
+    return build_stock_analysis(
+        ticker=payload.ticker,
+        include_price=payload.includePrice,
+        price_period=payload.pricePeriod,
+    )
+
+
+@app.post("/api/analyze/etf")
+def analyze_etf_endpoint(payload: ETFAnalysisRequest) -> dict[str, Any]:
+    return build_etf_analysis(payload)
 
 
 @app.get("/api/analysis/{ticker}")
@@ -80,59 +100,12 @@ def analyze_ticker(
     include_price: bool = True,
     price_period: str = Query(default="1y", pattern="^(1d|1w|1m|1y|5y|all)$"),
 ) -> dict[str, Any]:
-    requested_symbol = normalize_ticker(ticker)
-    symbol = resolve_ticker_alias(requested_symbol)
-    warnings: list[str] = []
-    if symbol != requested_symbol:
-        warnings.append(f"{requested_symbol}은 SEC 티커가 아니어서 {symbol}로 보정했습니다.")
+    return build_stock_analysis(ticker, include_price, price_period)
 
-    try:
-        sec_result = sec_client.fetch_annual_financials(symbol, limit=10)
-        financial_rows = sec_result["annual_rows"]
-        split_adjustments: list[dict[str, Any]] = []
-        try:
-            splits = get_stock_splits(symbol)
-            financial_rows, split_adjustments = apply_split_adjustments(financial_rows, splits)
-        except MarketDataError as exc:
-            warnings.append(str(exc))
 
-        analysis = analyze_financials(financial_rows)
-    except SECConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except SECClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except AnalysisError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    price_history: list[dict[str, Any]] = []
-    if include_price:
-        try:
-            price_history = get_stock_price_history(symbol, price_period)
-        except MarketDataError as exc:
-            warnings.append(str(exc))
-
-    return {
-        "requestedTicker": requested_symbol,
-        "ticker": symbol,
-        "entityName": sec_result["entity_name"],
-        "profile": sec_result["profile"],
-        "selectedTags": sec_result["selected_tags"],
-        "splitAdjustments": split_adjustments,
-        "annualRows": analysis["annual_rows"],
-        "metricRows": ordered_metric_rows(analysis["summaries"]),
-        "averageScore": analysis["average_score"],
-        "stabilityScore": analysis["stability_score"],
-        "totalScore": analysis["total_score"],
-        "maxScore": 7.0,
-        "averageIsSuitable": analysis["average_is_suitable"],
-        "stabilityIsSuitable": analysis["stability_is_suitable"],
-        "isSuitable": analysis["is_suitable"],
-        "averageVerdict": "적합" if analysis["average_is_suitable"] else "부적합",
-        "stabilityVerdict": "적합" if analysis["stability_is_suitable"] else "부적합",
-        "verdict": "적합" if analysis["is_suitable"] else "부적합",
-        "priceHistory": price_history,
-        "warnings": warnings,
-    }
+@app.post("/api/etf-analysis")
+def analyze_etf_ticker(payload: ETFAnalysisRequest) -> dict[str, Any]:
+    return build_etf_analysis(payload)
 
 
 @app.get("/api/markets/indices")
@@ -161,6 +134,95 @@ def exchange_rates(period: str = Query(default="1m", pattern="^(1d|1w|1m|1y|5y|a
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+def build_stock_analysis(
+    ticker: str,
+    include_price: bool = True,
+    price_period: str = "1y",
+) -> dict[str, Any]:
+    requested_symbol = normalize_ticker(ticker)
+    symbol = resolve_ticker_alias(requested_symbol)
+    period = validate_price_period(price_period)
+    warnings: list[str] = []
+    if symbol != requested_symbol:
+        warnings.append(f"{requested_symbol} ticker was normalized to {symbol}.")
+
+    try:
+        sec_result = sec_client.fetch_annual_financials(symbol, limit=10)
+        financial_rows = sec_result["annual_rows"]
+        split_adjustments: list[dict[str, Any]] = []
+        try:
+            splits = get_stock_splits(symbol)
+            financial_rows, split_adjustments = apply_split_adjustments(financial_rows, splits)
+        except MarketDataError as exc:
+            warnings.append(str(exc))
+
+        analysis = analyze_financials(financial_rows)
+    except SECConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SECClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except AnalysisError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    price_history: list[dict[str, Any]] = []
+    if include_price:
+        try:
+            price_history = get_stock_price_history(symbol, period)
+        except MarketDataError as exc:
+            warnings.append(str(exc))
+
+    return {
+        "requestedTicker": requested_symbol,
+        "ticker": symbol,
+        "entityName": sec_result["entity_name"],
+        "profile": sec_result["profile"],
+        "selectedTags": sec_result["selected_tags"],
+        "splitAdjustments": split_adjustments,
+        "annualRows": analysis["annual_rows"],
+        "metricRows": ordered_metric_rows(analysis["summaries"]),
+        "averageScore": analysis["average_score"],
+        "stabilityScore": analysis["stability_score"],
+        "totalScore": analysis["total_score"],
+        "maxScore": 7.0,
+        "averageIsSuitable": analysis["average_is_suitable"],
+        "stabilityIsSuitable": analysis["stability_is_suitable"],
+        "isSuitable": analysis["is_suitable"],
+        "averageVerdict": "적합" if analysis["average_is_suitable"] else "부적합",
+        "stabilityVerdict": "적합" if analysis["stability_is_suitable"] else "부적합",
+        "verdict": "적합" if analysis["is_suitable"] else "부적합",
+        "priceHistory": price_history,
+        "cache": sec_result.get("cache", {}),
+        "warnings": warnings,
+    }
+
+
+def build_etf_analysis(payload: ETFAnalysisRequest) -> dict[str, Any]:
+    requested_symbol = normalize_ticker(payload.ticker)
+    manual_holdings = (payload.manualHoldings or "").strip()
+
+    try:
+        if manual_holdings:
+            holdings = parse_manual_holdings(manual_holdings)
+            holdings_source = "manual"
+        else:
+            holdings = get_etf_holdings(requested_symbol)
+            holdings_source = "sample"
+    except ETFHoldingsError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(exc),
+                "manualInputRequired": True,
+                "manualFormat": "AAPL:7.5, MSFT:7.2, NVDA:6.8",
+            },
+        ) from exc
+
+    result = analyze_etf(requested_symbol, holdings, sec_client)
+    result["holdings"] = holdings
+    result["holdingsSource"] = holdings_source
+    return result
+
+
 def ordered_metric_rows(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key = {summary["key"]: summary for summary in summaries}
     return [by_key[key] for key in DISPLAY_ORDER if key in by_key]
@@ -177,6 +239,13 @@ def normalize_ticker(ticker: str) -> str:
 
 def resolve_ticker_alias(symbol: str) -> str:
     return TICKER_ALIASES.get(symbol, symbol)
+
+
+def validate_price_period(period: str) -> str:
+    normalized = (period or "1y").strip().lower()
+    if normalized not in SUPPORTED_PRICE_PERIODS:
+        raise HTTPException(status_code=400, detail="지원하지 않는 가격 기간입니다.")
+    return normalized
 
 
 if FRONTEND_DIST.exists():

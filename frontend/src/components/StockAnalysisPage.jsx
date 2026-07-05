@@ -1,6 +1,6 @@
-import { Loader2, Search } from "lucide-react";
+import { Database, Loader2, Search } from "lucide-react";
 import { useState } from "react";
-import { apiGet } from "../api.js";
+import { apiPost } from "../api.js";
 import { formatNumber } from "../formatters.js";
 import AnnualTable from "./AnnualTable.jsx";
 import { EmptyBlock, ErrorBlock, WarningBlock } from "./common.jsx";
@@ -21,7 +21,11 @@ export default function StockAnalysisPage({ title }) {
     setLoading(true);
     setError("");
     try {
-      const data = await apiGet(`/api/analysis/${encodeURIComponent(symbol)}?include_price=true&price_period=1y`);
+      const data = await apiPost("/api/analyze/stock", {
+        ticker: symbol,
+        includePrice: true,
+        pricePeriod: "1y",
+      });
       setResult(data);
       setTicker(data.ticker || symbol);
     } catch (err) {
@@ -54,7 +58,7 @@ export default function StockAnalysisPage({ title }) {
             type="submit"
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            분석
+            Analyze
           </button>
         </form>
       </div>
@@ -62,13 +66,13 @@ export default function StockAnalysisPage({ title }) {
       {error && <ErrorBlock message={error} />}
 
       {!result && !loading && (
-        <EmptyBlock label="미국 주식 티커를 입력하면 SEC EDGAR 기준 10년 재무 분석을 표시합니다." />
+        <EmptyBlock label="Enter one US stock ticker to analyze SEC EDGAR annual companyfacts." />
       )}
 
       {loading && (
         <div className="panel flex min-h-56 items-center justify-center gap-3 text-slate-500">
           <Loader2 className="h-5 w-5 animate-spin" />
-          <span className="text-sm font-semibold">SEC EDGAR와 가격 데이터를 조회하는 중</span>
+          <span className="text-sm font-semibold">Loading SEC analysis</span>
         </div>
       )}
 
@@ -80,21 +84,26 @@ export default function StockAnalysisPage({ title }) {
               <h3 className="mt-1 text-2xl font-semibold text-slate-950">{result.entityName}</h3>
               <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <SummaryTile
-                  label="평균 기준 점수"
+                  label="Average score"
                   value={`${formatNumber(result.averageScore ?? result.totalScore, 1)} / 7.0`}
                   tone={result.averageIsSuitable ? "good" : "bad"}
                 />
                 <SummaryTile
-                  label="안정성 점수"
+                  label="Weighted score"
                   value={`${formatNumber(result.stabilityScore ?? result.totalScore, 1)} / 7.0`}
                   tone={result.stabilityIsSuitable ?? result.isSuitable ? "good" : "bad"}
                 />
-                <SummaryTile label="안정성 판정" value={result.stabilityVerdict || result.verdict} tone={result.stabilityIsSuitable ?? result.isSuitable ? "good" : "bad"} />
+                <SummaryTile
+                  label="Verdict"
+                  value={result.stabilityVerdict || result.verdict}
+                  tone={result.stabilityIsSuitable ?? result.isSuitable ? "good" : "bad"}
+                />
                 <SummaryTile label="CIK" value={result.profile?.cik || "-"} />
               </div>
+              <CacheLine cache={result.cache} />
             </div>
             <div className="panel p-5">
-              <p className="text-sm font-semibold text-slate-400">주가 그래프</p>
+              <p className="text-sm font-semibold text-slate-400">Price chart</p>
               <MarketChart color="#059669" data={result.priceHistory} />
             </div>
           </div>
@@ -105,18 +114,19 @@ export default function StockAnalysisPage({ title }) {
 
           {result.splitAdjustments?.length > 0 && (
             <WarningBlock
-              message={`액면분할 영향을 제거하기 위해 ${result.splitAdjustments.length}개 연도의 주식 수와 EPS를 보정했습니다.`}
+              message={`${result.splitAdjustments.length} annual EPS/share rows were adjusted for stock splits.`}
             />
           )}
 
           <div className="panel p-4 sm:p-5">
             <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <p className="text-sm font-semibold text-slate-400">10년 연간 데이터 기준</p>
-                <h3 className="text-lg font-semibold text-slate-950">재무 지표 점수</h3>
+                <p className="text-sm font-semibold text-slate-400">10-year annual data</p>
+                <h3 className="text-lg font-semibold text-slate-950">Financial metric scores</h3>
               </div>
               <span className="text-sm font-semibold text-slate-500">
-                평균 {formatNumber(result.averageScore ?? result.totalScore, 1)} · 안정성 {formatNumber(result.stabilityScore ?? result.totalScore, 1)}
+                average {formatNumber(result.averageScore ?? result.totalScore, 1)} / weighted{" "}
+                {formatNumber(result.stabilityScore ?? result.totalScore, 1)}
               </span>
             </div>
             <MetricTable rows={result.metricRows} />
@@ -125,7 +135,7 @@ export default function StockAnalysisPage({ title }) {
           <div className="panel p-4 sm:p-5">
             <div className="mb-4">
               <p className="text-sm font-semibold text-slate-400">Annual Facts</p>
-              <h3 className="text-lg font-semibold text-slate-950">연간 재무 데이터</h3>
+              <h3 className="text-lg font-semibold text-slate-950">Annual financial data</h3>
             </div>
             <AnnualTable rows={result.annualRows} />
           </div>
@@ -135,13 +145,26 @@ export default function StockAnalysisPage({ title }) {
   );
 }
 
+function CacheLine({ cache }) {
+  if (!cache) return null;
+
+  return (
+    <div className="mt-4 inline-flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">
+      <Database className="h-4 w-4" />
+      <span>
+        Cache: {cache.used ? "used" : "refreshed"} ({cache.source || "unknown"})
+      </span>
+    </div>
+  );
+}
+
 function SummaryTile({ label, value, tone }) {
   const toneClass =
     tone === "good"
-      ? "text-emerald-700 bg-emerald-50"
+      ? "bg-emerald-50 text-emerald-700"
       : tone === "bad"
-        ? "text-rose-700 bg-rose-50"
-        : "text-slate-950 bg-slate-50";
+        ? "bg-rose-50 text-rose-700"
+        : "bg-slate-50 text-slate-950";
 
   return (
     <div className={`rounded-lg border border-slate-200 p-4 ${toneClass}`}>

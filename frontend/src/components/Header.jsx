@@ -1,9 +1,10 @@
-import { BarChart3, CircleDollarSign, Gauge, Search } from "lucide-react";
+import { BarChart3, CircleDollarSign, Gauge, Layers, Search } from "lucide-react";
 
 const items = [
   { key: "indices", label: "지수", icon: BarChart3 },
   { key: "analysis", label: "주요 분석", icon: Gauge },
   { key: "stocks", label: "주식", icon: Search },
+  { key: "etf", label: "ETF", icon: Layers },
   { key: "fx", label: "환율", icon: CircleDollarSign },
 ];
 
@@ -36,4 +37,3 @@ export default function Header({ active, onChange }) {
     </header>
   );
 }
-

@@ -1,17 +1,23 @@
 # SEC Stock Analyzer Web
 
-SEC EDGAR `companyfacts` API 기반 미국 주식 분석 웹앱입니다. React 프론트엔드와 FastAPI 백엔드로 구성되어 있고, 배포 시에는 FastAPI가 React 빌드 결과를 함께 서빙해 하나의 웹사이트로 실행됩니다.
+FastAPI + React web app for SEC EDGAR `companyfacts` based stock analysis and ETF holdings based analysis.
 
-## 프로젝트 구조
+## Project Structure
 
 ```text
 .
 ├─ backend/
 │  ├─ main.py
 │  ├─ requirements.txt
+│  ├─ cache/
+│  │  └─ companyfacts/
 │  └─ app/
 │     ├─ analyzer.py
+│     ├─ cache.py
+│     ├─ etf_analyzer.py
+│     ├─ etf_holdings.py
 │     ├─ market_data.py
+│     ├─ schemas.py
 │     ├─ sec_client.py
 │     └─ split_adjustment.py
 ├─ frontend/
@@ -21,115 +27,154 @@ SEC EDGAR `companyfacts` API 기반 미국 주식 분석 웹앱입니다. React 
 └─ render.yaml
 ```
 
-## 로컬 개발
+## Run Locally
 
-백엔드:
+Backend:
 
 ```powershell
 cd backend
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 py -m pip install -r requirements.txt
-Copy-Item .env.example .env
 uvicorn main:app --reload --port 8000
 ```
 
-프론트엔드:
+Frontend:
 
 ```powershell
 cd frontend
 pnpm install
-Copy-Item .env.example .env
 pnpm dev
 ```
 
-로컬 개발에서는 `frontend/.env`의 `VITE_API_BASE_URL`을 `http://localhost:8000`으로 둡니다.
-
-## 프로덕션 빌드
-
-```powershell
-cd frontend
-pnpm install
-pnpm build
-
-cd ..\backend
-.\.venv\Scripts\Activate.ps1
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-`frontend/dist`가 존재하면 FastAPI가 `/`에서 웹사이트를 서빙하고, `/api/*`는 API로 동작합니다. 프로덕션에서는 `VITE_API_BASE_URL`을 비워 같은 도메인의 `/api`를 사용합니다.
-
-## Docker 배포
-
-```powershell
-docker build -t sec-stock-analyzer .
-docker run --env SEC_USER_AGENT="Your Name your@email.com" -p 8000:8000 sec-stock-analyzer
-```
-
-접속 주소:
+For local frontend development, set `frontend/.env`:
 
 ```text
-http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
-
-Dockerfile은 다음 순서로 동작합니다.
-
-- Node 단계에서 `frontend` 의존성 설치 및 `pnpm build`
-- Python 단계에서 `backend` 의존성 설치
-- `frontend/dist`를 Python 이미지로 복사
-- FastAPI가 API와 정적 웹사이트를 함께 서빙
-
-## Render 배포
-
-`render.yaml`을 포함했습니다. Render에서 Blueprint로 연결하면 Docker 기반 Web Service로 배포할 수 있습니다.
-
-배포 전에 환경 변수는 실제 값으로 바꿔주세요.
-
-```text
-SEC_USER_AGENT=Your Name your@email.com
-```
-
-같은 도메인에서 프론트와 백엔드가 함께 제공되므로 `CORS_ORIGINS`는 필요 없습니다. 환율 API는 코드 기본값으로 `https://api.frankfurter.app`를 사용합니다.
 
 ## API
 
-- `GET /api/health`
-- `GET /api/analysis/{ticker}`
-- `GET /api/markets/indices?period=1m`
-- `GET /api/markets/stocks/{ticker}/history?period=1y`
-- `GET /api/exchange-rates?period=1m`
+### Stock Analysis
 
-기간 값은 `1d`, `1w`, `1m`, `1y`, `5y`, `all`을 지원합니다.
+`POST /api/analyze/stock`
 
-## 분석 점수
+Input:
 
-최근 10년 연간 SEC 데이터 기준으로 다음 항목을 계산합니다.
+```json
+{ "ticker": "AAPL" }
+```
 
-- 주당 순이익률
-- 주식 발행률
-- ROE
-- 유동 비율
-- 부채 비율
-- 순이익 성장률
-- 당기 순이익률
+Output includes company profile, annual rows, metric scores, final score, verdict, warnings, and `cache` metadata.
 
-각 지표는 평균 기준과 표준편차 반영 기준을 분리해서 계산합니다.
+The legacy endpoint `GET /api/analysis/{ticker}` is kept for compatibility.
 
-- 평균 기준 점수: `mean`이 기준값을 통과하면 1점
-- 안정성 점수: positive metric은 `mean - std`, negative metric은 `mean + std`가 기준값을 통과하면 1점
-- positive metrics: 당기 순이익률, 순이익 성장률, 유동 비율, ROE, 주당 순이익률
-- negative metrics: 부채 비율, 주식 발행률
+### ETF Analysis
 
-총점 3점 이상이면 `적합`, 미만이면 `부적합`입니다.
+`POST /api/analyze/etf`
 
-## 보정 로직
+Input:
 
-Apple Inc.의 정식 SEC 티커는 `AAPL`입니다. 사용자가 흔히 입력하는 `APPL`은 자동으로 `AAPL`로 보정합니다.
+```json
+{ "ticker": "QQQ" }
+```
 
-SEC `companyfacts`의 연도별 주식 수와 EPS는 액면분할 전후 기준이 섞일 수 있습니다. 백엔드는 yfinance의 split 이력을 사용해 분석 전에 주식 수와 EPS를 최신 기준으로 보정한 뒤 점수 로직을 적용합니다.
+Manual holdings fallback:
 
-## 데이터 소스
+```json
+{
+  "ticker": "CUSTOM",
+  "manualHoldings": "AAPL:7.5, MSFT:7.2, NVDA:6.8"
+}
+```
 
-- 미국 기업 재무제표: SEC EDGAR `company_tickers.json`, `companyfacts`
-- 미국 지수/주가 및 국내 지수: `yfinance` 기반 Yahoo Finance 데이터
-- 환율: 기본값은 무료 `Frankfurter` API이며, `.env`의 `EXCHANGE_RATE_BASE_URL`로 교체할 수 있습니다.
+Output includes top holding analysis rows, simple average score, holding-weighted average score, final verdict, and cache metadata per holding.
+
+The legacy endpoint `POST /api/etf-analysis` is kept for compatibility.
+
+## Stock Scoring
+
+The backend calls SEC `companyfacts` once per company and calculates all metrics from that JSON.
+
+Metrics:
+
+- Net profit margin = `NetIncomeLoss / Revenue`
+- Net income growth = year-over-year growth of `NetIncomeLoss`
+- Debt ratio = `Liabilities / StockholdersEquity`
+- Current ratio = `AssetsCurrent / LiabilitiesCurrent`
+- ROE = `NetIncomeLoss / StockholdersEquity`
+- Share issuance rate = absolute year-over-year growth of `WeightedAverageNumberOfSharesOutstanding`
+- EPS growth = year-over-year growth of EPS
+
+Average pass thresholds:
+
+- Net profit margin average >= 20%
+- Net income growth average >= 10%
+- Debt ratio average < 75%
+- Current ratio average >= 100%
+- ROE average >= 25%
+- Share issuance rate average < 10%
+- EPS growth average >= 7.5%
+
+Scoring:
+
+- Average criterion gives `0` or `1`.
+- Average plus/minus standard deviation criterion gives `0`, `0.5`, or `1`.
+- Final score uses the weighted standard-deviation score, from `0` to `7`.
+- Final score >= `3` is suitable; otherwise it is unsuitable.
+
+## ETF Analysis
+
+ETFs are not analyzed as if they were companies. The app analyzes the ETF's top holdings as individual companies using the existing SEC stock analyzer.
+
+ETF score:
+
+- Each successful holding has a company score from `0` to `7`.
+- Simple average score uses only successfully analyzed holdings.
+- Weighted average score is `sum(company score * holding weight) / sum(successful holding weight)`.
+- Failed holdings do not stop ETF analysis; their failure reason appears in the holding table.
+- Final ETF verdict uses the weighted average score. Score >= `3` is suitable.
+
+## ETF Holdings Limitation
+
+SEC does not provide a direct ETF holdings API.
+
+Current implementation:
+
+- `SPY`, `QQQ`, and `IVV` use hardcoded sample top-10 holdings in `backend/app/etf_holdings.py`.
+- Other ETFs can be analyzed with manual holdings input.
+- Manual format: `AAPL:7.5, MSFT:7.2, NVDA:6.8`.
+- A future holdings provider can replace `get_etf_holdings(etf_ticker)`.
+
+## SEC API Rate-Limit Protection
+
+The backend is intentionally sequential for SEC analysis:
+
+- Uses `requests.Session()`.
+- Sends `User-Agent` on every SEC request.
+- Waits at least `0.2` seconds between SEC requests, keeping requests around 5 per second or lower.
+- Does not parallelize ETF holding analysis.
+- Avoids duplicate companyfacts requests through memory and file cache.
+
+## Cache System
+
+Companyfacts JSON is cached under:
+
+```text
+backend/cache/companyfacts/
+```
+
+Behavior:
+
+- Cache key is the company CIK, for example `CIK0000320193.json`.
+- Cache TTL is 24 hours.
+- If valid cache exists, SEC is not called.
+- A process-local memory cache prevents duplicate calls inside one ETF analysis.
+- Cache metadata is included in API responses as `cache`.
+- `app/cache.py` exposes an `invalidate()` method so a refresh/delete option can be added later.
+
+## Data Sources
+
+- US company financials: SEC EDGAR `company_tickers.json` and `companyfacts`
+- Stock price and splits: Yahoo Finance through `yfinance`
+- Exchange rates: Frankfurter API by default

@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 
 Direction = Literal["higher", "lower"]
+SUITABLE_THRESHOLD = 3.0
 
 
 class AnalysisError(RuntimeError):
@@ -29,13 +30,13 @@ class MetricRule:
 
 
 METRIC_RULES: tuple[MetricRule, ...] = (
-    MetricRule("net_profit_margin", "당기 순이익률", 0.20, "higher"),
+    MetricRule("net_profit_margin", "당기순이익률", 0.20, "higher"),
     MetricRule("net_income_growth", "순이익 성장률", 0.10, "higher"),
-    MetricRule("debt_ratio", "부채 비율", 0.75, "lower"),
-    MetricRule("current_ratio", "유동 비율", 1.00, "higher"),
+    MetricRule("debt_ratio", "부채비율", 0.75, "lower"),
+    MetricRule("current_ratio", "유동비율", 1.00, "higher"),
     MetricRule("roe", "ROE", 0.25, "higher"),
-    MetricRule("share_issuance_rate", "주식 발행률", 0.10, "lower"),
-    MetricRule("eps_growth", "주당 순이익률", 0.075, "higher"),
+    MetricRule("share_issuance_rate", "주식발행률", 0.10, "lower"),
+    MetricRule("eps_growth", "주당순이익률", 0.075, "higher"),
 )
 
 
@@ -60,9 +61,9 @@ def analyze_financials(financial_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "average_score": average_score,
         "stability_score": stability_score,
         "total_score": stability_score,
-        "average_is_suitable": average_score >= 3,
-        "stability_is_suitable": stability_score >= 3,
-        "is_suitable": stability_score >= 3,
+        "average_is_suitable": average_score >= SUITABLE_THRESHOLD,
+        "stability_is_suitable": stability_score >= SUITABLE_THRESHOLD,
+        "is_suitable": stability_score >= SUITABLE_THRESHOLD,
     }
 
 
@@ -72,11 +73,10 @@ def calculate_annual_metrics(financial_rows: list[dict[str, Any]]) -> list[dict[
 
     for index, row in enumerate(financial_rows, start=1):
         if not isinstance(row, dict):
-            raise AnalysisError(f"{index}번째 재무 데이터의 형식이 올바르지 않습니다.")
+            raise AnalysisError(f"{index}번째 재무 데이터 형식이 올바르지 않습니다.")
 
         revenue = to_float(row.get("Revenue"))
         net_income = to_float(row.get("NetIncomeLoss"))
-        assets = to_float(row.get("Assets"))
         liabilities = to_float(row.get("Liabilities"))
         equity = to_float(row.get("StockholdersEquity"))
         current_assets = to_float(row.get("AssetsCurrent"))
@@ -89,7 +89,7 @@ def calculate_annual_metrics(financial_rows: list[dict[str, Any]]) -> list[dict[
             "date": row.get("date"),
             "Revenue": revenue,
             "NetIncomeLoss": net_income,
-            "Assets": assets,
+            "Assets": to_float(row.get("Assets")),
             "Liabilities": liabilities,
             "StockholdersEquity": equity,
             "AssetsCurrent": current_assets,
@@ -98,7 +98,7 @@ def calculate_annual_metrics(financial_rows: list[dict[str, Any]]) -> list[dict[
             "EarningsPerShareBasic": eps,
             "net_profit_margin": safe_divide(net_income, revenue),
             "net_income_growth": None,
-            "debt_ratio": debt_ratio(liabilities, assets, equity),
+            "debt_ratio": safe_divide(liabilities, equity),
             "current_ratio": safe_divide(current_assets, current_liabilities),
             "roe": safe_divide(net_income, equity),
             "share_retirement_rate": None,
@@ -116,7 +116,7 @@ def calculate_annual_metrics(financial_rows: list[dict[str, Any]]) -> list[dict[
                 -share_growth if share_growth is not None else None
             )
             metrics["share_issuance_rate"] = (
-                max(share_growth, 0.0) if share_growth is not None else None
+                abs(share_growth) if share_growth is not None else None
             )
             metrics["eps_growth"] = growth_rate(eps, previous["EarningsPerShareBasic"])
 
@@ -139,9 +139,9 @@ def summarize_metrics(annual_rows: list[dict[str, Any]]) -> list[dict[str, Any]]
         deviation = stdev(values) if len(values) > 1 else (0.0 if values else None)
         adjusted_value = adjusted_metric_value(average, deviation, rule)
         average_pass = metric_pass(average, rule)
-        stability_pass = metric_pass(adjusted_value, rule)
+        stability_score = score_metric(average, deviation, rule)
+        stability_pass = stability_score >= 1.0
         average_score = 1.0 if average_pass else 0.0
-        stability_score = 1.0 if stability_pass else 0.0
 
         summaries.append(
             {
@@ -217,9 +217,9 @@ def score_metric(average: float | None, deviation: float | None, rule: MetricRul
 
 
 def judgement_label(score: float) -> str:
-    if score == 1.0:
+    if score >= 1.0:
         return "통과"
-    if score == 0.5:
+    if score >= 0.5:
         return "주의"
     return "미달"
 
@@ -230,21 +230,6 @@ def safe_divide(numerator: float | None, denominator: float | None) -> float | N
 
     result = numerator / denominator
     return result if is_usable_number(result) else None
-
-
-def debt_ratio(
-    liabilities: float | None,
-    assets: float | None,
-    equity: float | None,
-) -> float | None:
-    direct = safe_divide(liabilities, assets)
-    if direct is not None:
-        return direct
-
-    if is_usable_number(liabilities) and is_usable_number(equity):
-        return safe_divide(liabilities, liabilities + equity)
-
-    return None
 
 
 def growth_rate(current: float | None, previous: float | None) -> float | None:

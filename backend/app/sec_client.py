@@ -17,6 +17,8 @@ import urllib.request
 import zipfile
 import zlib
 
+from .cache import JsonFileCache, cache_meta
+
 try:
     import requests as _requests
 
@@ -196,8 +198,12 @@ class SECClient:
     timeout: int = 30
     min_interval_seconds: float = 0.2
     session: Any = field(default_factory=lambda: requests.Session() if requests else _UrllibSession())
+    companyfacts_cache: JsonFileCache = field(default_factory=JsonFileCache)
     _last_request_at: float = field(default=0.0, init=False)
     _ticker_map: dict[str, dict[str, Any]] | None = field(default=None, init=False)
+    _companyfacts_memory_cache: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _companyfacts_memory_meta: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _last_companyfacts_cache_meta: dict[str, Any] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         configured_user_agent = os.getenv(SEC_USER_AGENT_ENV, "").strip()
@@ -262,19 +268,55 @@ class SECClient:
 
     def get_companyfacts(self, cik: str) -> dict[str, Any]:
         cik = str(cik).zfill(10)
+        cache_key = f"CIK{cik}"
+        if cache_key in self._companyfacts_memory_cache:
+            meta = cache_meta(used=True, source="memory", key=cache_key)
+            self._last_companyfacts_cache_meta = meta
+            return self._companyfacts_memory_cache[cache_key]
+
+        cached = self.companyfacts_cache.get(cache_key)
+        if cached.hit and cached.payload is not None:
+            meta = cache_meta(
+                used=True,
+                source="file",
+                key=cache_key,
+                path=cached.path,
+                age_seconds=cached.age_seconds,
+                expires_in_seconds=cached.expires_in_seconds,
+            )
+            self._remember_companyfacts(cache_key, cached.payload, meta)
+            return cached.payload
+
         try:
             payload = self._get_json(f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json")
         except SECConfigurationError:
             raise
         except SECClientError as direct_error:
             try:
-                payload = self._get_companyfacts_from_bulk_zip(cik)
-            except SECClientError as bulk_error:
-                payload = self._get_local_companyfacts_payload(cik, direct_error, bulk_error)
+                payload = self._get_local_companyfacts_payload(cik, direct_error, None)
+            except SECClientError:
+                raise
+            cache_path = self.companyfacts_cache.set(cache_key, payload)
+            meta = cache_meta(used=True, source="bundled_local", key=cache_key, path=cache_path)
+            self._remember_companyfacts(cache_key, payload, meta)
+            return payload
 
         if not isinstance(payload, dict):
             raise SECClientError("SEC companyfacts 응답 형식이 예상과 다릅니다.")
+        cache_path = self.companyfacts_cache.set(cache_key, payload)
+        meta = cache_meta(used=False, source="sec", key=cache_key, path=cache_path)
+        self._remember_companyfacts(cache_key, payload, meta)
         return payload
+
+    def _remember_companyfacts(
+        self,
+        key: str,
+        payload: dict[str, Any],
+        meta: dict[str, Any],
+    ) -> None:
+        self._companyfacts_memory_cache[key] = payload
+        self._companyfacts_memory_meta[key] = meta
+        self._last_companyfacts_cache_meta = meta
 
     def _get_local_companyfacts_payload(
         self,
@@ -349,6 +391,7 @@ class SECClient:
             "entity_name": companyfacts.get("entityName") or profile.get("title") or ticker.upper(),
             "annual_rows": annual_rows,
             "selected_tags": selected_tags,
+            "cache": dict(self._last_companyfacts_cache_meta),
         }
 
     def _get_json(self, url: str) -> Any:
@@ -382,7 +425,7 @@ class SECClient:
         }
 
     def _configured_user_agent(self) -> str:
-        user_agent = os.getenv(SEC_USER_AGENT_ENV, "").strip()
+        user_agent = os.getenv(SEC_USER_AGENT_ENV, "").strip() or self.user_agent.strip()
         if not user_agent:
             raise SECConfigurationError(SEC_USER_AGENT_REQUIRED_MESSAGE)
         return user_agent
