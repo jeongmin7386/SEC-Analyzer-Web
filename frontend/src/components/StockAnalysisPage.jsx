@@ -7,6 +7,8 @@ import { EmptyBlock, ErrorBlock, WarningBlock } from "./common.jsx";
 import MarketChart from "./MarketChart.jsx";
 import MetricTable from "./MetricTable.jsx";
 
+const sampleEtfs = new Set(["SPY", "QQQ", "IVV"]);
+
 export default function StockAnalysisPage({ title }) {
   const [ticker, setTicker] = useState("AAPL");
   const [result, setResult] = useState(null);
@@ -17,6 +19,11 @@ export default function StockAnalysisPage({ title }) {
     event.preventDefault();
     const symbol = ticker.trim().toUpperCase();
     if (!symbol) return;
+    if (sampleEtfs.has(symbol)) {
+      setResult(null);
+      setError(`${symbol} is an ETF. Use the ETF tab instead of stock analysis.`);
+      return;
+    }
 
     setLoading(true);
     setError("");

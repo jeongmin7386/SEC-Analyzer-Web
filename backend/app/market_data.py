@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
+from pathlib import Path
+import tempfile
+import time
 from typing import Any
 
 import requests
@@ -12,6 +15,17 @@ try:
     import yfinance as yf
 except ImportError:
     yf = None
+
+
+YFINANCE_CACHE_DIR = Path(__file__).resolve().parents[1] / "cache" / "yfinance"
+if yf is not None:
+    try:
+        YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        YFINANCE_CACHE_DIR = Path(tempfile.gettempdir()) / "sec-stock-analyzer-yfinance"
+        YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if hasattr(yf, "set_tz_cache_location"):
+        yf.set_tz_cache_location(str(YFINANCE_CACHE_DIR))
 
 
 class MarketDataError(RuntimeError):
@@ -37,11 +51,11 @@ EXCHANGE_PERIOD_DAYS = {
 }
 
 INDEX_SYMBOLS = (
-    {"key": "nasdaq", "name": "나스닥", "symbol": "^IXIC"},
+    {"key": "nasdaq", "name": "Nasdaq", "symbol": "^IXIC"},
     {"key": "sp500", "name": "S&P 500", "symbol": "^GSPC"},
-    {"key": "dow", "name": "DOW", "symbol": "^DJI"},
-    {"key": "kospi", "name": "코스피", "symbol": "^KS11"},
-    {"key": "kosdaq", "name": "코스닥", "symbol": "^KQ11"},
+    {"key": "dow", "name": "Dow", "symbol": "^DJI"},
+    {"key": "kospi", "name": "KOSPI", "symbol": "^KS11"},
+    {"key": "kosdaq", "name": "KOSDAQ", "symbol": "^KQ11"},
 )
 
 EXCHANGE_PAIRS = (
@@ -86,22 +100,22 @@ def get_indices(period: str = "1m") -> dict[str, Any]:
 def get_stock_price_history(ticker: str, period: str = "1y") -> list[dict[str, Any]]:
     symbol = ticker.strip().upper()
     if not symbol:
-        raise MarketDataError("티커를 입력하세요.")
+        raise MarketDataError("Ticker is required.")
     return get_symbol_history(symbol, normalize_period(period))
 
 
 def get_stock_splits(ticker: str) -> list[dict[str, Any]]:
     if yf is None:
-        raise MarketDataError("yfinance 패키지가 설치되어 있지 않습니다.")
+        raise MarketDataError("yfinance is not installed.")
 
     symbol = ticker.strip().upper()
     if not symbol:
-        raise MarketDataError("티커를 입력하세요.")
+        raise MarketDataError("Ticker is required.")
 
     try:
         splits = yf.Ticker(symbol).splits
     except Exception as exc:
-        raise MarketDataError(f"{symbol} 액면분할 데이터를 가져오지 못했습니다: {exc}") from exc
+        raise MarketDataError(f"Could not load stock split data for {symbol}: {exc}") from exc
 
     if splits is None or splits.empty:
         return []
@@ -115,24 +129,47 @@ def get_stock_splits(ticker: str) -> list[dict[str, Any]]:
 
 def get_symbol_history(symbol: str, period: str = "1m") -> list[dict[str, Any]]:
     if yf is None:
-        raise MarketDataError("yfinance 패키지가 설치되어 있지 않습니다.")
+        raise MarketDataError("yfinance is not installed.")
 
     period_config = PERIODS[normalize_period(period)]
-    try:
-        frame = yf.Ticker(symbol).history(
-            period=period_config["yf_period"],
-            interval=period_config["interval"],
-            auto_adjust=False,
-        )
-    except Exception as exc:  # yfinance raises a mix of network and parsing exceptions.
-        raise MarketDataError(f"{symbol} 가격 데이터를 가져오지 못했습니다: {exc}") from exc
+    frame = None
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            frame = yf.Ticker(symbol).history(
+                period=period_config["yf_period"],
+                interval=period_config["interval"],
+                auto_adjust=False,
+            )
+            if frame is not None and not frame.empty and "Close" in frame:
+                break
+        except Exception as exc:
+            last_error = exc
+
+        if attempt < 2:
+            time.sleep(0.6 * (attempt + 1))
 
     if frame is None or frame.empty or "Close" not in frame:
-        raise MarketDataError(f"{symbol} 가격 데이터가 비어 있습니다.")
+        try:
+            frame = yf.download(
+                symbol,
+                period=period_config["yf_period"],
+                interval=period_config["interval"],
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+        except Exception as exc:
+            last_error = exc
+
+    if frame is None or frame.empty or "Close" not in frame:
+        suffix = f" ({last_error})" if last_error else ""
+        raise MarketDataError(f"{symbol} price data is temporarily unavailable{suffix}.")
 
     close = frame["Close"].dropna()
     if close.empty:
-        raise MarketDataError(f"{symbol} 종가 데이터가 비어 있습니다.")
+        raise MarketDataError(f"{symbol} close data is empty.")
 
     points: list[dict[str, Any]] = []
     for index, value in close.items():
@@ -197,16 +234,16 @@ def fetch_frankfurter_rates(start: date, end: date) -> dict[str, dict[str, float
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as exc:
-        raise MarketDataError(f"환율 데이터를 가져오지 못했습니다: {exc}") from exc
+        raise MarketDataError(f"Could not load exchange-rate data: {exc}") from exc
     except ValueError as exc:
-        raise MarketDataError("환율 API 응답을 JSON으로 해석할 수 없습니다.") from exc
+        raise MarketDataError("Exchange-rate API did not return valid JSON.") from exc
 
     if "rates" in payload and isinstance(payload["rates"], dict):
         if all(isinstance(value, (int, float)) for value in payload["rates"].values()):
             return {str(payload.get("date") or end.isoformat()): payload["rates"]}
         return payload["rates"]
 
-    raise MarketDataError("환율 API 응답 형식이 예상과 다릅니다.")
+    raise MarketDataError("Exchange-rate API response shape is invalid.")
 
 
 def convert_usd_rates_to_pairs(

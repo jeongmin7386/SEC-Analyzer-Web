@@ -5,6 +5,29 @@ import { formatNumber } from "../formatters.js";
 import { ChangeText, ErrorBlock, LoadingBlock, PeriodSelector, marketMovementColor } from "./common.jsx";
 import MarketChart from "./MarketChart.jsx";
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasNasdaqHistory(payload) {
+  return Boolean(payload?.items?.find((item) => item.key === "nasdaq" && item.history?.length));
+}
+
+async function loadIndicesWithRetry(period) {
+  try {
+    const data = await apiGet(`/api/markets/indices?period=${period}`);
+    if (hasNasdaqHistory(data)) {
+      return data;
+    }
+  } catch (error) {
+    await delay(900);
+    return apiGet(`/api/markets/indices?period=${period}`);
+  }
+
+  await delay(900);
+  return apiGet(`/api/markets/indices?period=${period}`);
+}
+
 export default function IndexPage() {
   const [period, setPeriod] = useState("1m");
   const [payload, setPayload] = useState(null);
@@ -19,12 +42,15 @@ export default function IndexPage() {
       setLoading(true);
       setError("");
       try {
-        const data = await apiGet(`/api/markets/indices?period=${period}`);
+        const data = await loadIndicesWithRetry(period);
         if (cancelled) return;
         setPayload(data);
-        const next = data.items.find((item) => item.key === selectedKey && item.history.length);
-        if (!next) {
-          setSelectedKey(data.items.find((item) => item.history.length)?.key || data.items[0]?.key || "nasdaq");
+
+        const selectedHasHistory = data.items.find(
+          (item) => item.key === selectedKey && item.history.length,
+        );
+        if (!selectedHasHistory) {
+          setSelectedKey(data.items.find((item) => item.history.length)?.key || "nasdaq");
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
