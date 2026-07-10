@@ -1,4 +1,4 @@
-"""FastAPI entry point for the SEC EDGAR stock analysis web app."""
+"""FastAPI entry point for the KR/US stock analysis web app."""
 
 from __future__ import annotations
 
@@ -22,8 +22,17 @@ from app.market_data import (
     get_stock_price_history,
     get_stock_splits,
 )
-from app.schemas import ETFAnalysisRequest, StockAnalysisRequest
+from app.providers.opendart_provider import (
+    OpenDARTConfigurationError,
+    OpenDARTError,
+    OpenDARTProvider,
+)
+from app.providers.sec_provider import SECProvider
+from app.schemas import ETFAnalysisRequest, StockAnalysisRequest, UnifiedStockAnalysisRequest
 from app.sec_client import DEFAULT_USER_AGENT, SECClient, SECClientError, SECConfigurationError
+from app.services.market_resolver import MarketResolutionError, MarketResolver
+from app.services.stock_analysis_service import StockAnalysisService
+from app.services.stock_search_service import StockSearchService
 from app.split_adjustment import apply_split_adjustments
 
 
@@ -40,9 +49,9 @@ def cors_origins() -> list[str]:
 
 
 app = FastAPI(
-    title="SEC Stock Analyzer API",
-    description="SEC EDGAR companyfacts based stock and ETF holdings analysis API",
-    version="1.1.0",
+    title="Global Stock Analyzer API",
+    description="KR/US stock analysis API using SEC EDGAR and OpenDART",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -54,6 +63,11 @@ app.add_middleware(
 )
 
 sec_client = SECClient(user_agent=os.getenv("SEC_USER_AGENT", DEFAULT_USER_AGENT))
+sec_provider = SECProvider(sec_client)
+opendart_provider = OpenDARTProvider(api_key=os.getenv("OPENDART_API_KEY", ""))
+market_resolver = MarketResolver(opendart_provider, sec_provider)
+stock_search_service = StockSearchService(market_resolver)
+stock_analysis_service = StockAnalysisService(market_resolver, opendart_provider, sec_provider)
 
 DISPLAY_ORDER = (
     "eps_growth",
@@ -74,10 +88,87 @@ TICKER_ALIASES = {
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "serviceName": "Global Stock Analyzer",
         "secUserAgentConfigured": bool(sec_client.user_agent.strip()),
+        "openDartApiKeyConfigured": bool(opendart_provider.api_key),
         "companyfactsCacheDir": str(sec_client.companyfacts_cache.directory),
         "companyfactsCacheTtlSeconds": sec_client.companyfacts_cache.ttl_seconds,
     }
+
+
+@app.get("/api/stocks/search")
+def search_stocks(
+    q: str = Query(..., min_length=1),
+    market: str = Query(default="AUTO", pattern="^(AUTO|KR|US)$"),
+) -> dict[str, Any]:
+    try:
+        return stock_search_service.search(q, market)
+    except MarketResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SECClientError as exc:
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
+
+
+@app.get("/api/stocks/{market}/{symbol}/profile")
+def stock_profile(market: str, symbol: str) -> dict[str, Any]:
+    try:
+        return stock_analysis_service.get_profile(market, symbol)
+    except MarketResolutionError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), "candidates": exc.candidates}) from exc
+    except (OpenDARTError, SECClientError) as exc:
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
+
+
+@app.get("/api/stocks/{market}/{symbol}/financials")
+def stock_financials(
+    market: str,
+    symbol: str,
+    years: int = Query(default=10, ge=1, le=20),
+) -> dict[str, Any]:
+    try:
+        return stock_analysis_service.get_financials(market, symbol, years=years)
+    except OpenDARTConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=safe_error(str(exc))) from exc
+    except MarketResolutionError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), "candidates": exc.candidates}) from exc
+    except (OpenDARTError, SECClientError) as exc:
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
+
+
+@app.get("/api/stocks/{market}/{symbol}/prices")
+def stock_prices(
+    market: str,
+    symbol: str,
+    period: str = Query(default="1y", pattern="^(1d|1w|1m|1y|5y|all)$"),
+) -> dict[str, Any]:
+    try:
+        return stock_analysis_service.get_prices(market, symbol, period=period)
+    except MarketResolutionError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), "candidates": exc.candidates}) from exc
+    except (OpenDARTError, MarketDataError) as exc:
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
+
+
+@app.post("/api/stocks/analyze")
+def analyze_unified_stock(payload: UnifiedStockAnalysisRequest) -> dict[str, Any]:
+    try:
+        return stock_analysis_service.analyze(
+            market=payload.market,
+            symbol=payload.symbol,
+            preset_id=payload.presetId,
+            years=payload.years,
+            include_price=payload.includePrice,
+            price_period=payload.pricePeriod,
+        )
+    except OpenDARTConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=safe_error(str(exc))) from exc
+    except MarketResolutionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "candidates": exc.candidates},
+        ) from exc
+    except (OpenDARTError, SECClientError, AnalysisError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
 
 
 @app.post("/api/analyze/stock")
@@ -122,7 +213,7 @@ def stock_history(
     try:
         history = get_stock_price_history(symbol, period)
     except MarketDataError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
     return {"ticker": symbol, "period": period, "history": history}
 
 
@@ -131,7 +222,7 @@ def exchange_rates(period: str = Query(default="1m", pattern="^(1d|1w|1m|1y|5y|a
     try:
         return get_exchange_rates(period)
     except MarketDataError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
 
 
 def build_stock_analysis(
@@ -158,11 +249,11 @@ def build_stock_analysis(
 
         analysis = analyze_financials(financial_rows)
     except SECConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=safe_error(str(exc))) from exc
     except SECClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=safe_error(str(exc))) from exc
     except AnalysisError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=safe_error(str(exc))) from exc
 
     price_history: list[dict[str, Any]] = []
     if include_price:
@@ -246,6 +337,13 @@ def validate_price_period(period: str) -> str:
     if normalized not in SUPPORTED_PRICE_PERIODS:
         raise HTTPException(status_code=400, detail="지원하지 않는 가격 기간입니다.")
     return normalized
+
+
+def safe_error(message: str) -> str:
+    api_key = os.getenv("OPENDART_API_KEY", "")
+    if api_key:
+        message = message.replace(api_key, "[redacted]")
+    return message
 
 
 if FRONTEND_DIST.exists():

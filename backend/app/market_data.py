@@ -56,6 +56,7 @@ INDEX_SYMBOLS = (
     {"key": "dow", "name": "Dow", "symbol": "^DJI"},
     {"key": "kospi", "name": "KOSPI", "symbol": "^KS11"},
     {"key": "kosdaq", "name": "KOSDAQ", "symbol": "^KQ11"},
+    {"key": "kospi200", "name": "KOSPI 200", "symbol": "^KS200"},
 )
 
 EXCHANGE_PAIRS = (

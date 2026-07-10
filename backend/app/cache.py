@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import tempfile
 import time
 from typing import Any
 
@@ -74,11 +75,21 @@ class JsonFileCache:
     def set(self, key: str, payload: dict[str, Any]) -> Path:
         safe_key = cache_key(key)
         path = self.path_for(safe_key)
-        self.directory.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+        except OSError:
+            fallback_dir = Path(tempfile.gettempdir()) / "sec-stock-analyzer-cache" / self.directory.name
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            self.directory = fallback_dir
+            path = self.path_for(safe_key)
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
         return path
 
     def invalidate(self, key: str) -> bool:

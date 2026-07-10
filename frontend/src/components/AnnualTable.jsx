@@ -1,6 +1,6 @@
-import { formatNumber, formatPercent } from "../formatters.js";
+import { formatMoney, formatPercent } from "../formatters.js";
 
-export default function AnnualTable({ rows }) {
+export default function AnnualTable({ rows, currency = "USD" }) {
   if (!rows?.length) {
     return null;
   }
@@ -12,22 +12,34 @@ export default function AnnualTable({ rows }) {
           <tr className="text-slate-400">
             <th className="border-b border-slate-200 px-3 py-3 font-semibold">연도</th>
             <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">매출</th>
+            <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">영업이익</th>
             <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">순이익</th>
+            <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">자산</th>
+            <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">부채</th>
             <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">ROE</th>
-            <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">EPS 성장</th>
+            <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">EPS 성장률</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.fiscal_year} className="text-slate-700">
+            <tr key={row.fiscalYear || row.fiscal_year} className="text-slate-700">
               <td className="border-b border-slate-100 px-3 py-3 font-semibold text-slate-950">
-                {row.fiscal_year}
+                {row.fiscalYear || row.fiscal_year}
               </td>
               <td className="border-b border-slate-100 px-3 py-3 text-right">
-                {formatNumber(row.Revenue, 0)}
+                {formatMoney(row.revenue ?? row.Revenue, currency)}
               </td>
               <td className="border-b border-slate-100 px-3 py-3 text-right">
-                {formatNumber(row.NetIncomeLoss, 0)}
+                {formatMoney(row.operatingIncome, currency)}
+              </td>
+              <td className="border-b border-slate-100 px-3 py-3 text-right">
+                {formatMoney(row.netIncome ?? row.NetIncomeLoss, currency)}
+              </td>
+              <td className="border-b border-slate-100 px-3 py-3 text-right">
+                {formatMoney(row.totalAssets ?? row.Assets, currency)}
+              </td>
+              <td className="border-b border-slate-100 px-3 py-3 text-right">
+                {formatMoney(row.totalLiabilities ?? row.Liabilities, currency)}
               </td>
               <td className="border-b border-slate-100 px-3 py-3 text-right">
                 {formatPercent(row.roe)}
@@ -42,4 +54,3 @@ export default function AnnualTable({ rows }) {
     </div>
   );
 }
-

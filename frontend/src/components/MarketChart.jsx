@@ -64,4 +64,3 @@ export default function MarketChart({ data, dataKey = "close", color = "#0f172a"
     </div>
   );
 }
-

@@ -41,6 +41,7 @@ export function LoadingBlock({ label = "불러오는 중" }) {
 }
 
 export function ErrorBlock({ message }) {
+  if (!message) return null;
   return (
     <div className="panel flex items-start gap-3 border-rose-200 bg-rose-50 p-4 text-rose-700">
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -50,6 +51,7 @@ export function ErrorBlock({ message }) {
 }
 
 export function WarningBlock({ message }) {
+  if (!message) return null;
   return (
     <div className="panel flex items-start gap-3 border-amber-200 bg-amber-50 p-4 text-amber-800">
       <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />

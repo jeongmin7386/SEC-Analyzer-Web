@@ -19,7 +19,7 @@ async function loadIndicesWithRetry(period) {
     if (hasNasdaqHistory(data)) {
       return data;
     }
-  } catch (error) {
+  } catch {
     await delay(900);
     return apiGet(`/api/markets/indices?period=${period}`);
   }
@@ -85,7 +85,7 @@ export default function IndexPage() {
         <LoadingBlock label="지수 데이터를 불러오는 중" />
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
             {payload?.items.map((item) => (
               <button
                 className={`panel min-h-32 p-4 text-left transition hover:-translate-y-0.5 ${
